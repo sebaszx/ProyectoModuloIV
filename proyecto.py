@@ -12,6 +12,7 @@ Original file is located at
 
 #import pyspark
 
+from queue import Full
 from pyspark.sql import SparkSession
 from pyspark.sql.types import StructField,StringType,IntegerType,StructType,DateType,FloatType
 from pyspark.sql import functions as F
@@ -21,6 +22,13 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from pyspark.ml.feature import StringIndexer,VectorAssembler
+from pyspark.ml.feature import StandardScaler
+from pyspark.ml.classification import RandomForestClassifier,DecisionTreeClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
+from pyspark.sql.functions import col,isnan, when, count
+from functions import leerClima, EliminarNulos, leerDatosAccidents,LeerDatosEnBD,EscribirDatosEnTabla,LeerDatosEnBD,ContarNulos
 
 spark = SparkSession \
     .builder \
@@ -31,49 +39,14 @@ spark = SparkSession \
 
 """Se leen los datos de los accidentes"""
 
-accidentsUSAFull = spark \
-    .read \
-    .format("csv") \
-    .option("path", "Datos/US_Accidents_Dec21_updated_solo_2021.csv") \
-    .option("header", True) \
-    .schema(StructType([
-                StructField("ID", StringType()),
-                StructField("Severity", IntegerType()),
-                StructField("Start_Time", StringType()),
-                StructField("End_Time", StringType()),
-                StructField("Start_Lat", FloatType()),
-                StructField("Start_Lng", FloatType()),
-                StructField("End_Lat", FloatType()),
-                StructField("End_Lng", FloatType()),
-                StructField("Distance(mi)", FloatType()),
-                StructField("Description", StringType()),
-                StructField("Number", IntegerType()),
-                StructField("Street", StringType()),
-                StructField("Side", StringType()),
-                StructField("City", StringType()),
-                StructField("County", StringType()),
-                StructField("State", StringType()),
-                StructField("Zipcode", StringType()),
-                StructField("Country", StringType()),
-                StructField("Timezone", StringType()),
-                StructField("Airport_Code", StringType()),
-                StructField("Weather_Timestamp", StringType()),
-                StructField("Temperature(F)", FloatType()),
-                StructField("Wind_Chill(F)", FloatType()),
-                StructField("Humidity(%)", FloatType()),
-                StructField("Pressure(in)", FloatType()),
-                StructField("Visibility(mi)", FloatType()),
-                StructField("Wind_Direction", StringType()),
-                StructField("Wind_Speed(mph)", FloatType()),
-                StructField("Precipitation(in)", FloatType()),
-                StructField("Weather_Condition", StringType())
-                ])) \
-    .load()
+
+accidentsUSAFull=leerDatosAccidents()
+print(accidentsUSAFull.count())
 #accidentsUSAFull.select(to_timestamp(accidentsUSAFull.Start_Time, 'MM-dd-YYYY HH:mm:ss').alias('dt')).show(1)
 #accidentsUSAFull.printSchema()
 accidentsUSAFull= accidentsUSAFull.withColumn('col_with_date_format',F.to_date(accidentsUSAFull.Start_Time))
 #below is the result
-accidentsUSAFull.select('Start_Time','col_with_date_format').show(10,False)
+#accidentsUSAFull.select('Start_Time','col_with_date_format').show(10,False)
 #accidentsUSAFull.select(to_timestamp(accidentsUSAFull.Start_Time, 'MM-dd-yyyy HH:mm').alias('dt')).collect()
 
 """Filtramos un poco el dataframe para solo obtener las columnas de nuestro interes"""
@@ -84,50 +57,29 @@ accidentsUSAFull["County"],accidentsUSAFull["State"],accidentsUSAFull["Temperatu
 accidentsUSAFull["Wind_Chill(F)"],
 accidentsUSAFull["Humidity(%)"],accidentsUSAFull["Pressure(in)"],accidentsUSAFull["Visibility(mi)"],
 accidentsUSAFull["Zipcode"])
-
+accidentsUSA=accidentsUSA.withColumnRenamed('Severity', 'Severity_accident')
 """Hacemos un describe de los datos"""
 
 accidentsUSA.describe().show()
 
 """Contamos los valores nullos"""
 
-from pyspark.sql.functions import col,isnan, when, count
-accidentsUSA.select([count(when(isnan(c) | col(c).isNull(), c)).alias(c) for c in accidentsUSA.columns]
-   ).show()
 
-"""Se limpia el dataset"""
+    
+ContarNulos(accidentsUSA)
 
-accidentsUSA=accidentsUSA.na.drop()
 
-from pyspark.sql.functions import col,isnan, when, count
-accidentsUSA.select([count(when(isnan(c) | col(c).isNull(), c)).alias(c) for c in accidentsUSA.columns]
-   ).show()
+
+
+accidentsUSA=EliminarNulos(accidentsUSA)
+
+ContarNulos(accidentsUSA)
+
 
 """Se lee el archivo del clima"""
 
-WeatherFull = spark \
-    .read \
-    .format("csv") \
-    .option("path", "Datos/WeatherEvents_Jan2016-Dec2021_solo_2021.csv") \
-    .option("header", True) \
-    .schema(StructType([
-                StructField("EventId", StringType()),
-                StructField("Type", StringType()),
-                StructField("Severity", StringType()),
-                StructField("StartTime(UTC)", StringType()),
-                StructField("EndTime(UTC)", StringType()),
-                StructField("Precipitation(in)", FloatType()),
-                StructField("TimeZone", StringType()),
-                StructField("AirportCode", StringType()),
-                StructField("LocationLat", FloatType()),
-                 StructField("LocationLng", FloatType()),
-                StructField("City", StringType()),
-                StructField("County", StringType()),
-                StructField("State", StringType()),
-                StructField("ZipCode", StringType()),
-               
-                ])) \
-    .load()
+WeatherFull=leerClima()
+print(WeatherFull.count())
 WeatherFull.show()
 
 """Simplificamos el dataset con lo que necesitamos"""
@@ -138,17 +90,15 @@ WeatherFull["Precipitation(in)"],WeatherFull["State"],WeatherFull["County"],
 WeatherFull["City"],
 WeatherFull["Zipcode"])
 
-weatherUSA.describe().show()
+#weatherUSA.describe().show()
 
-weatherUSA.select([count(when(isnan(c) | col(c).isNull(), c)).alias(c) for c in weatherUSA.columns]
-   ).show()
+ContarNulos(weatherUSA)
 
 """Se limpia el dataset"""
 
-weatherUSA=weatherUSA.na.drop()
+weatherUSA=EliminarNulos(weatherUSA)
 
-weatherUSA.select([count(when(isnan(c) | col(c).isNull(), c)).alias(c) for c in weatherUSA.columns]
-   ).show()
+ContarNulos(weatherUSA)
 
    
 """Intenamos balancear el target"""
@@ -159,7 +109,7 @@ weatherUSA = weatherUSA.withColumn("Type", when(weatherUSA.Type == "Cold","Other
       .when(weatherUSA.Type == "Hail","Others") \
         .when(weatherUSA.Type == "Precipitation","Others") \
       .otherwise(weatherUSA.Type))
-weatherUSA.show()
+#weatherUSA.show()
 
 weatherUSA.groupBy("Type").count().show()
 
@@ -175,7 +125,7 @@ weatherUSA.groupBy("Type").count().show()
 """
 
 
-x=accidentsUSA.toPandas()["Severity"].values.tolist()
+x=accidentsUSA.toPandas()["Severity_accident"].values.tolist()
 
 pd.Series(x).value_counts(sort=False).plot(kind='bar')
 
@@ -204,10 +154,163 @@ pd.Series(x).value_counts(sort=False).plot(kind='bar')
 FullJoinDF=weatherUSA.join(accidentsUSA, (weatherUSA["City"] == accidentsUSA["City"]) &
    ( weatherUSA["County"] == accidentsUSA["County"])  &
    ( weatherUSA["State"] == accidentsUSA["State"])  &
-   ( weatherUSA["ZipCode"] == accidentsUSA["ZipCode"]) 
-   &
+   ( weatherUSA["ZipCode"] == accidentsUSA["ZipCode"])  &
    ( weatherUSA["StartTime(UTC)"] == accidentsUSA["Start_Time"]),"inner")
+
 rows=FullJoinDF.count()
 print(rows)
 
 FullJoinDF.printSchema()
+
+FullJoinDF.groupBy("Type").count().show()
+"""Se codifica el target"""
+indexer = StringIndexer(inputCol="Type", outputCol="TypeIndex") 
+indexed = indexer.fit(FullJoinDF).transform(FullJoinDF) 
+FullJoinDF=indexed
+indexers = StringIndexer(inputCol="Severity_accident", outputCol="Severity_accidentIndex") 
+indexeds = indexers.fit(FullJoinDF).transform(FullJoinDF) 
+
+#indexeds.select("Type","TypeIndex").show()
+FullJoinDF=indexeds
+
+FullJoinDF.printSchema()
+
+"""Se escogen solo los valores que tienen """
+FullJoinDF=FullJoinDF.select("TypeIndex","Precipitation(in)","Temperature(F)","Wind_Chill(F)","Humidity(%)","Pressure(in)","Visibility(mi)","Severity_accidentIndex")
+FullJoinDF.show()
+
+"""Se escribe en BD"""
+EscribirDatosEnTabla(FullJoinDF,"datos")
+"""Se vectoriza y escalan los datos"""
+def  vectorizar(dataframe):
+    assembler = VectorAssembler(
+                    inputCols=[
+                "Precipitation(in)","Temperature(F)","Wind_Chill(F)","Humidity(%)","Pressure(in)","Visibility(mi)","Severity_accidentIndex"],
+                    outputCol='features')
+
+    vector_df = assembler.transform(dataframe)
+    vector_df = vector_df.select(['features', 'TypeIndex'])
+    return vector_df
+
+
+def Escalador(dataframe):
+    standard_scaler = StandardScaler(inputCol='features', outputCol='scaled')
+    scale_model = standard_scaler.fit(dataframe)
+
+    scaled_df = scale_model.transform(dataframe)
+   
+    return scaled_df
+
+data=LeerDatosEnBD("datos")
+data.show()
+
+
+"""Separacion de datos"""
+train, test = data.randomSplit([0.7, 0.3], seed = 2)
+print("Training Dataset Count: " + str(train.count()))
+print("Test Dataset Count: " + str(test.count()))
+train.printSchema()
+
+train.printSchema()
+train=vectorizar(train)
+
+train=Escalador(train)
+
+testData=vectorizar(test)
+testData=Escalador(testData)
+
+"""Random Forest"""
+
+
+rf = RandomForestClassifier(featuresCol = 'scaled', labelCol = 'TypeIndex')
+evaluator = MulticlassClassificationEvaluator(
+    labelCol="TypeIndex", predictionCol="prediction", metricName="accuracy")
+rfparamGrid = (ParamGridBuilder()
+               .addGrid(rf.maxDepth, [2, 5, 10])
+               .addGrid(rf.maxBins, [5, 10, 20])
+               .addGrid(rf.numTrees, [5, 20, 50])
+             .build())
+
+rfcv = CrossValidator(estimator = rf,
+                      estimatorParamMaps = rfparamGrid,
+                      evaluator = evaluator,
+                      numFolds = 4)
+
+rfModel = rfcv.fit(train)
+
+predictions = rfModel.transform(testData)
+accuracy = evaluator.evaluate(predictions)
+
+
+
+
+predictions.printSchema()
+predictions=predictions.withColumnRenamed("prediction","Prediccion")
+predictions.select("TypeIndex", "Prediccion").show(30)
+predictions=predictions.select("Prediccion")
+print(accuracy)
+print("Test Error = %g" % (1.0 - accuracy))
+
+predictions_train = rfModel.transform(train)
+accuracy = evaluator.evaluate(predictions_train)
+
+
+
+
+predictions_train.printSchema()
+predictions_train=predictions_train.withColumnRenamed("prediction","Prediccion")
+predictions_train.select("TypeIndex", "Prediccion").show(30)
+predictions_train=predictions_train.select("Prediccion")
+print(accuracy)
+print("Test Error = %g" % (1.0 - accuracy))
+
+"""Analisis Random Forest 
+Podemos obsservar que tiene un desempeño un poco malo llegando casi al 80% con el test set,
+ utilizando cross-validation. Tambien podemos observar que con el train set tiene un accuracy de 91%, como la diferencia no es tan grande podemos decir que hay un poco de overfitting"""
+"""Decision Tree"""
+dt = DecisionTreeClassifier(featuresCol = 'scaled', labelCol = 'TypeIndex',  maxDepth=15)
+dtparamGrid = (ParamGridBuilder()
+             .addGrid(dt.maxDepth, [2, 5, 10, 20, 30])
+             .addGrid(dt.maxBins, [10, 20, 40, 80, 100])
+             .build())
+evaluator = MulticlassClassificationEvaluator(
+    labelCol="TypeIndex", predictionCol="prediction", metricName="accuracy")
+
+dtcv = CrossValidator(estimator = dt,
+                      estimatorParamMaps = dtparamGrid,
+                      evaluator = evaluator,
+                      numFolds = 5)   
+dtcvModel = dtcv.fit(train)
+print(dtcvModel)
+
+predictions = dtcvModel.transform(testData)
+
+
+
+
+accuracy = evaluator.evaluate(predictions)
+predictions.printSchema()
+predictions=predictions.withColumnRenamed("prediction","Prediccion")
+predictions.select("TypeIndex", "Prediccion").show(30)
+predictions=predictions.select("Prediccion")
+print(accuracy)
+print("Test Error = %g" % (1.0 - accuracy))
+
+
+predictions_train = dtcvModel.transform(train)
+
+
+
+
+accuracy = evaluator.evaluate(predictions_train)
+predictions_train.printSchema()
+predictions_train=predictions_train.withColumnRenamed("prediction","Prediccion")
+predictions_train.select("TypeIndex", "Prediccion").show(30)
+predictions_train=predictions_train.select("Prediccion")
+print(accuracy)
+print("Test Error = %g" % (1.0 - accuracy))
+
+"""Analisis Decision Tree
+Podemos obsservar que tiene un desempeño un poco pobre utilizando cross-validation.
+ Tambien podemos observar que con el train set tiene un accuracy de 97%, 
+claro indicador de que hay overfitting"""
